@@ -17,14 +17,22 @@ package raft
 //   in the same server.
 //
 
-import "sync"
+import (
+	"sync"
+)
 import "labrpc"
 import "time"
-import "fmt"
+
 // import "bytes"
 // import "encoding/gob"
 
+type ServerType int32
 
+const (
+	Follower    ServerType = 0
+	Leader      ServerType = 1
+	Candidate   ServerType = 2
+)
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -50,7 +58,8 @@ type Raft struct {
 	me        int // index into peers[]
 	currentTerm int
 	votedFor	int
-
+	lastHeartBeat	int64
+	Type 		ServerType
 	// Your data here.
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -118,36 +127,38 @@ type RequestVoteReply struct {
 	VoteGranted		int
 }
 
-//
-// example RequestVote RPC handler.
-//
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
+
 }
 
-//
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// returns true if labrpc says the RPC was delivered.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-//
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
 
+type AppendEntriesArgs struct{
+	Term			int
+	LeaderID		int
+	PrevLogIndex	int
+	PrevLogTerm		int
+	entries			interface{}
+	LeaderCommit	int
+}
 
+type AppendEntriesReply struct{
+	Term			int
+	Success 		int
+}
+
+func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.lastHeartBeat = time.Now().UnixNano()
+}
+
+func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -171,17 +182,44 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 func (rf *Raft) Follower(){
-	for{
-		fmt.Println(time.Now().Unix())
+
+	for rf.Type == Follower {
+		timer := time.NewTimer(150 *time.Millisecond)
+		select{
+
+
+			case  <-timer.C:
+				go rf.Candidate()
+				return
+		}
 	}
 }
 
 func (rf *Raft) Candidate(){
+	rf.currentTerm++
+	rf.Type = Candidate
+	for rf.Type == Candidate {
 
+	}
 }
 
 func (rf *Raft) Leader(){
-
+	rf.Type = Leader
+	for rf.Type == Leader {
+		for i := 0; i < len(rf.peers);i++{
+			if i != rf.me{
+				args := AppendEntriesArgs{}
+				reply := &AppendEntriesReply{}
+				rf.sendAppendEntries(i, args, reply)
+				if reply.Term > rf.currentTerm{
+					rf.currentTerm = reply.Term
+					go rf.Follower()
+					return
+				}
+			}
+		}
+		time.Sleep(time.Millisecond*150)
+	}
 }
 //
 // the tester calls Kill() when a Raft instance won't
@@ -210,6 +248,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.lastHeartBeat = time.Now().UnixNano()
+	rf.currentTerm = 0
+	rf.Type = Follower
+
+
 
 	// Your initialization code here.
 	go rf.Follower()
