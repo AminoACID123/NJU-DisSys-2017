@@ -19,7 +19,8 @@ package raft
 
 import "sync"
 import "labrpc"
-
+import "time"
+import "fmt"
 // import "bytes"
 // import "encoding/gob"
 
@@ -40,11 +41,15 @@ type ApplyMsg struct {
 //
 // A Go object implementing a single Raft peer.
 //
+
+
 type Raft struct {
 	mu        sync.Mutex
 	peers     []*labrpc.ClientEnd
 	persister *Persister
 	me        int // index into peers[]
+	currentTerm int
+	votedFor	int
 
 	// Your data here.
 	// Look at the paper's Figure 2 for a description of what
@@ -98,6 +103,10 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here.
+	Term			int
+	CandidateID		int
+	LastLogIndex	int
+	LastLogTerm		int
 }
 
 //
@@ -105,6 +114,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here.
+	Term			int
+	VoteGranted		int
 }
 
 //
@@ -159,6 +170,19 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
+func (rf *Raft) Follower(){
+	for{
+		fmt.Println(time.Now().Unix())
+	}
+}
+
+func (rf *Raft) Candidate(){
+
+}
+
+func (rf *Raft) Leader(){
+
+}
 //
 // the tester calls Kill() when a Raft instance won't
 // be needed again. you are not required to do anything
@@ -188,7 +212,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here.
-
+	go rf.Follower()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
