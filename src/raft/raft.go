@@ -60,6 +60,21 @@ type Log struct{
 	entries	[] 		*Entry
 }
 
+func (log *Log) getLastLogIndex() int {
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	return len(log.entries)
+}
+
+func (log *Log) getLastLogTerm() int {
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	if len(log.entries) == 0{
+		return 0
+	}
+	return log.entries[len(log.entries)-1].term
+}
+
 type Raft struct {
 	mu        		sync.Mutex
 	peers     		[]*labrpc.ClientEnd
@@ -157,23 +172,28 @@ type RequestVoteReply struct {
 	VoteGranted		bool
 }
 
-func (rf *Raft) handleRequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
+func (rf *Raft) handleRequestVote(args RequestVoteArgs, replyChan chan RequestVoteReply) {
 	// Your code here.
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	reply := RequestVoteReply{}
+	reply.Term = rf.currentTerm
  	if rf.currentTerm > args.Term{
- 		reply.Term = rf.currentTerm
  		reply.VoteGranted = false
- 		return
 	} else if rf.votedFor == args.CandidateID || rf.votedFor == -1 {
-		rf.log.mu
+		if args.LastLogTerm > rf.log.getLastLogTerm(){
+			reply.VoteGranted = true
+		}else if args.LastLogTerm == rf.log.getLastLogTerm() && args.LastLogIndex >= rf.log.getLastLogIndex(){
+			reply.VoteGranted = true
+		}
 	}else {
 		reply.VoteGranted = false
 	}
+	replyChan <- reply
 }
 
-func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.handleRequestVote", args, reply)
+func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, replyChan chan RequestVoteReply) bool {
+	ok := rf.peers[server].Call("Raft.handleRequestVote", args, replyChan)
 	return ok
 }
 
@@ -192,7 +212,9 @@ type AppendEntriesReply struct{
 }
 
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.lastHeartBeat = time.Now().UnixNano()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 }
 
 func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -215,10 +237,10 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
-	isLeader := true
+	//isLeader := true
 
 
-	return index, term, rf.Type == Leader
+	return index, term, rf.GetType() == Leader
 }
 
 func (rf *Raft) Follower(){
@@ -238,9 +260,10 @@ func (rf *Raft) Follower(){
 func (rf *Raft) Candidate(){
 	rf.currentTerm++
 	rf.Type = Candidate
-	resChan := make(chan *RequestVoteReply, len(rf.peers)-1)
+	resChan := make(chan RequestVoteReply, len(rf.peers)-1)
 	votesCount := 0
-	continueVote := false
+	continueVote := true
+	timer := time.NewTimer(300 *time.Millisecond)
 	for rf.Type == Candidate {
 		if continueVote {
 			votesCount = 1
@@ -249,39 +272,38 @@ func (rf *Raft) Candidate(){
 			rf.votedFor = rf.me
 
 			for idx, peer := range rf.peers {
-				if idx == rf.me{
+				if idx == rf.me {
 					continue
 				}
 				rf.wg.Add(1)
 				arg := RequestVoteArgs{
-					Term:			rf.currentTerm,
-					CandidateID:	rf.me,
-					LastLogIndex
-					LastLogTerm
+					Term:         rf.currentTerm,
+					CandidateID:  rf.me,
+					LastLogIndex: rf.log.getLastLogIndex(),
+					LastLogTerm:  rf.log.getLastLogTerm(),
 				}
+				go rf.sendRequestVote(idx,arg, resChan)
 			}
-				peer.sendRequestVote(newRequestVoteRequest(s.currentTerm, s.name, lastLogIndex, lastLogTerm), respChan)
 
-			}
 			rf.wg.Done()
 
 		}
 
 		if votesCount >= rf.getMajorityCount() {
-			rf.SetType(Leader)
+			go rf.Leader()
 			return
 		}
 
 		select {
-		case resp := <-resChan:
-			if resp.VoteGranted {
+		case res := <-resChan:
+			if res.VoteGranted {
 				votesCount++
 			}
-
-		case <-timeoutChan:
+		case <-timer.C:
 			// 如果再一次超时了，重新发起选主请求
-			doVote = true
+			continueVote = true
 		}
+	}
 }
 
 func (rf *Raft) Leader(){
@@ -329,7 +351,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.lastHeartBeat = time.Now().UnixNano()
 	rf.currentTerm = 0
 	rf.Type = Follower
 
