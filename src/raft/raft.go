@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"reflect"
 	"sync"
 )
 import "labrpc"
@@ -49,31 +50,60 @@ type ApplyMsg struct {
 //
 // A Go object implementing a single Raft peer.
 //
+type Entry struct{
+	command interface{}
+	term	int
+}
 
+type Log struct{
+	mu        		sync.Mutex
+	entries	[] 		*Entry
+}
 
 type Raft struct {
-	mu        sync.Mutex
-	peers     []*labrpc.ClientEnd
-	persister *Persister
-	me        int // index into peers[]
-	currentTerm int
-	votedFor	int
+	mu        		sync.Mutex
+	peers     		[]*labrpc.ClientEnd
+	persister 		*Persister
+	me        		int // index into peers[]
+	log        		*Log
+	currentTerm		int
+	votedFor		int
 	lastHeartBeat	int64
-	Type 		ServerType
-	// Your data here.
-	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
+	Type 			ServerType
+	wg 				sync.WaitGroup
 
+
+}
+
+func (rf *Raft) GetType() ServerType{
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.Type
+}
+
+func (rf *Raft) SetType(serverType ServerType){
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.Type = serverType
+}
+
+func (rf *Raft) getMajorityCount() int{
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return len(rf.peers)/2+1
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	var term int
-	var isleader bool
+	var isLeader bool
 	// Your code here.
-	return term, isleader
+	term = rf.currentTerm
+	isLeader = rf.Type==Leader
+	return term, isLeader
 }
 
 //
@@ -124,16 +154,26 @@ type RequestVoteArgs struct {
 type RequestVoteReply struct {
 	// Your data here.
 	Term			int
-	VoteGranted		int
+	VoteGranted		bool
 }
 
-func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
+func (rf *Raft) handleRequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+ 	if rf.currentTerm > args.Term{
+ 		reply.Term = rf.currentTerm
+ 		reply.VoteGranted = false
+ 		return
+	} else if rf.votedFor == args.CandidateID || rf.votedFor == -1 {
+		rf.log.mu
+	}else {
+		reply.VoteGranted = false
+	}
 }
 
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	ok := rf.peers[server].Call("Raft.handleRequestVote", args, reply)
 	return ok
 }
 
@@ -142,7 +182,7 @@ type AppendEntriesArgs struct{
 	LeaderID		int
 	PrevLogIndex	int
 	PrevLogTerm		int
-	entries			interface{}
+	entries			[] interface{}
 	LeaderCommit	int
 }
 
@@ -178,13 +218,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 
-	return index, term, isLeader
+	return index, term, rf.Type == Leader
 }
 
 func (rf *Raft) Follower(){
 
 	for rf.Type == Follower {
-		timer := time.NewTimer(150 *time.Millisecond)
+		timer := time.NewTimer(300 *time.Millisecond)
 		select{
 
 
@@ -198,14 +238,55 @@ func (rf *Raft) Follower(){
 func (rf *Raft) Candidate(){
 	rf.currentTerm++
 	rf.Type = Candidate
+	resChan := make(chan *RequestVoteReply, len(rf.peers)-1)
+	votesCount := 0
+	continueVote := false
 	for rf.Type == Candidate {
+		if continueVote {
+			votesCount = 1
+			continueVote = false
+			rf.currentTerm++
+			rf.votedFor = rf.me
 
-	}
+			for idx, peer := range rf.peers {
+				if idx == rf.me{
+					continue
+				}
+				rf.wg.Add(1)
+				arg := RequestVoteArgs{
+					Term:			rf.currentTerm,
+					CandidateID:	rf.me,
+					LastLogIndex
+					LastLogTerm
+				}
+			}
+				peer.sendRequestVote(newRequestVoteRequest(s.currentTerm, s.name, lastLogIndex, lastLogTerm), respChan)
+
+			}
+			rf.wg.Done()
+
+		}
+
+		if votesCount >= rf.getMajorityCount() {
+			rf.SetType(Leader)
+			return
+		}
+
+		select {
+		case resp := <-resChan:
+			if resp.VoteGranted {
+				votesCount++
+			}
+
+		case <-timeoutChan:
+			// 如果再一次超时了，重新发起选主请求
+			doVote = true
+		}
 }
 
 func (rf *Raft) Leader(){
-	rf.Type = Leader
-	for rf.Type == Leader {
+	rf.SetType(Leader)
+	for rf.GetType() == Leader {
 		for i := 0; i < len(rf.peers);i++{
 			if i != rf.me{
 				args := AppendEntriesArgs{}
