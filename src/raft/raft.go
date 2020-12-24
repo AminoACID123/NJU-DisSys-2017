@@ -76,7 +76,7 @@ func (log *Log) getLastLogTerm() int {
 }
 
 type Raft struct {
-	vt            sync.Mutex
+	t            sync.Mutex
 	my            sync.Mutex
 	mu            sync.Mutex
 	ID 			  int64
@@ -95,20 +95,20 @@ type Raft struct {
 }
 
 func (rf *Raft) GetType() ServerType{
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.t.Lock()
+	defer rf.t.Unlock()
 	return rf.Type
 }
 
 func (rf *Raft) SetType(serverType ServerType){
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.t.Lock()
+	defer rf.t.Unlock()
 	rf.Type = serverType
 }
 
 func (rf *Raft) getMajorityCount() int{
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.my.Lock()
+	defer rf.my.Unlock()
 	return len(rf.peers)/2+1
 }
 
@@ -199,7 +199,14 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.currentTerm > args.Term{
  		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
-	} else if rf.votedFor == args.CandidateID || rf.votedFor == -1 {
+		return
+	}else if rf.currentTerm < args.Term{
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		rf.Type = Follower
+	}
+	reply.Term = rf.currentTerm
+	if rf.votedFor == -1 {
 		if args.LastLogTerm > rf.log.getLastLogTerm(){
 			rf.votedFor = args.CandidateID
 			reply.VoteGranted = true
@@ -224,6 +231,7 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs) bool {
 	if ok == false {
 		return false
 	}
+	//fmt.Printf("%d %d\n", rf.me, server)
 	rf.my.Lock()
 	if reply.VoteGranted{
 		rf.voteCount++
@@ -235,6 +243,8 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs) bool {
 
 	return ok
 }
+
+
 
 type AppendEntriesArgs struct{
 	Term			int
@@ -277,6 +287,7 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 
 	if ok == false{
+		//fmt.Printf("Fail %d %d\n", rf.me, server)
 		return false
 	}
 
@@ -328,9 +339,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Follower(){
 
 	rf.SetType(Follower)
-	t := int64(rand.Intn(150)+100)
+	t := int64(rand.Intn(10)*10+200)
+
 	for rf.Type == Follower {
+
 		if (time.Now().UnixNano() - rf.lastHeartBeat)/1000000 > t{
+
+			//fmt.Printf("%d %d %d\n",rf.me, t,(time.Now().UnixNano() - rf.lastHeartBeat)/1000000)
+			//rf.SetType(Candidate)
 			go rf.Candidate()
 			return
 		}
@@ -339,19 +355,22 @@ func (rf *Raft) Follower(){
 }
 
 func (rf *Raft) Candidate(){
+	//fmt.Println("aaa")
 	//fmt.Println(len(rf.peers))
 	rf.SetType(Candidate)
+	//rf.Type = Candidate
 	//resChan := make(chan RequestVoteReply, len(rf.peers)-1)
-
+	//fmt.Println("bbb")
 	continueVote := true
 	timer := time.NewTimer(time.Duration(rand.Intn(150)+100 ) * time.Millisecond)
 
-
 	for rf.Type == Candidate {
 		if continueVote {
+
 			continueVote = false
 			rf.currentTerm++
 			rf.votedFor = rf.ID
+			rf.resetVoteCount()
 			rf.incVoteCount()
 			for idx, _ := range rf.peers {
 				if idx == rf.me {
@@ -370,17 +389,15 @@ func (rf *Raft) Candidate(){
 		select {
 		case <-timer.C:
 			continueVote = true
-			rf.resetVoteCount()
 			timer.Reset(time.Duration(rand.Intn(150)+100 ) * time.Millisecond)
+			continue
 		default:
 			if rf.voteCount >= rf.getMajorityCount(){
-				rf.resetVoteCount()
 				rf.Type = Leader
 				go rf.Leader()
 				return
 			} else if rf.Type == Follower {
 				//fmt.Println(rf.me)
-				rf.resetVoteCount()
 				go rf.Follower()
 				return
 			}
@@ -444,15 +461,18 @@ func (rf *Raft) Kill() {
 func (rf *Raft) Report(){
 	for {
 		rf.my.Lock()
+		/*
 		for idx,_ := range rf.peers{
 			fmt.Print(idx)
 			if idx == rf.me && rf.Type == Leader{
 				fmt.Print("Leader")
 			}
 		}
+		 */
+		fmt.Printf("%d %d\n", rf.me, rf.lastHeartBeat)
 		fmt.Println()
 		rf.my.Unlock()
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond*300)
 	}
 }
 
