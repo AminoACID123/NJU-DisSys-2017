@@ -57,7 +57,23 @@ type Entry struct{
 
 type Log struct{
 	mu        		sync.Mutex
-	entries	[] 		*Entry
+	entries			[]Entry
+}
+
+func (log *Log) appendEntry(term int, cmd interface{}){
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	entry := Entry{
+		command: cmd,
+		term:term,
+	}
+	log.entries = append(log.entries, entry)
+}
+
+func (log *Log) getEntry(i int) Entry{
+	log.mu.Lock()
+	log.mu.Unlock()
+	return log.entries[i-1]
 }
 
 func (log *Log) getLastLogIndex() int {
@@ -79,19 +95,21 @@ type Raft struct {
 	t            sync.Mutex
 	my            sync.Mutex
 	mu            sync.Mutex
-	ID 			  int64
 	peers         []*labrpc.ClientEnd
 	persister     *Persister
 	me            int // index into peers[]
 	log           *Log
 	currentTerm   int
-	votedFor      int64
+	votedFor      int
 	lastHeartBeat int64
 	Type          ServerType
 	wg            sync.WaitGroup
 	voteCount		int
-
-
+	nextIndex		[]int
+	matchIndex		[]int
+	commitIndex		int
+	lastApplied		int
+	msgChan			chan ApplyMsg
 }
 
 func (rf *Raft) GetType() ServerType{
@@ -173,7 +191,7 @@ func (rf *Raft) incVoteCount() {
 type RequestVoteArgs struct {
 	// Your data here.
 	Term			int
-	CandidateID		int64
+	CandidateID		int
 	LastLogIndex	int
 	LastLogTerm		int
 }
@@ -248,7 +266,7 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs) bool {
 
 type AppendEntriesArgs struct{
 	Term			int
-	LeaderID		int64
+	LeaderID		int
 	PrevLogIndex	int
 	PrevLogTerm		int
 	entries			[] interface{}
@@ -305,7 +323,6 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs) bool {
 func (rf *Raft) heartBeat(server int){
 		args := AppendEntriesArgs{
 			Term:	rf.currentTerm,
-			LeaderID: rf.ID,
 			PrevLogIndex: 0,
 			PrevLogTerm: 0,
 			LeaderCommit: 0,
@@ -314,6 +331,62 @@ func (rf *Raft) heartBeat(server int){
 		rf.sendAppendEntries(server,args)
 }
 
+func (rf *Raft) StartAgree() {
+	for idx,_ := range rf.peers{
+		if idx == rf.me{
+			continue
+		}
+		go rf.repLog(idx)
+	}
+	time.Sleep(time.Millisecond*20)
+	rf.my.Lock()
+	for N:=rf.log.getLastLogIndex();N>rf.commitIndex;N--{
+		cnt := 0
+		for _,v := range rf.matchIndex{
+			if v >= N{
+				cnt ++
+			}
+		}
+		if cnt >= rf.getMajorityCount() && rf.log.getEntry(N).term == rf.currentTerm{
+			for i:=rf.commitIndex+1;i<=N;i++{
+				e := rf.log.getEntry(i)
+				msg := ApplyMsg{Command: e.command, Index: i}
+				rf.msgChan <- msg
+			}
+			rf.commitIndex = N
+			break
+		}
+	}
+	rf.my.Unlock()
+}
+
+func (rf *Raft) repLog(server int){
+
+	reply := &AppendEntriesReply{Term: -1,Success: false}
+	args := AppendEntriesArgs{
+		Term:rf.currentTerm,
+		LeaderID:rf.me,
+		LeaderCommit:rf.commitIndex,
+	}
+	//////////
+	
+	for {
+		ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+		if !ok{
+			continue
+		}
+		rf.my.Lock()
+		if rf.currentTerm < reply.Term{
+			rf.Type = Follower
+			rf.my.Unlock()
+			return
+		}else if !reply.Success{
+
+		}
+	}
+
+
+}
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -333,10 +406,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	//isLeader := true
 
 
-	return index, term, rf.Type == Leader
+	term = rf.currentTerm
+	index = rf.log.getLastLogIndex() + 1
+
+	rf.log.appendEntry(rf.currentTerm, command)
+	go rf.StartAgree()
+	return index, term, rf.GetType() == Leader
 }
 
-func (rf *Raft) Follower(){
+func (rf *Raft) Follower(msgChan chan ApplyMsg){
 
 	rf.SetType(Follower)
 	t := int64(rand.Intn(10)*10+200)
@@ -345,16 +423,14 @@ func (rf *Raft) Follower(){
 
 		if (time.Now().UnixNano() - rf.lastHeartBeat)/1000000 > t{
 
-			//fmt.Printf("%d %d %d\n",rf.me, t,(time.Now().UnixNano() - rf.lastHeartBeat)/1000000)
-			//rf.SetType(Candidate)
-			go rf.Candidate()
+			go rf.Candidate(msgChan)
 			return
 		}
 		time.Sleep(time.Millisecond*20)
 	}
 }
 
-func (rf *Raft) Candidate(){
+func (rf *Raft) Candidate(msgChan chan ApplyMsg){
 	//fmt.Println("aaa")
 	//fmt.Println(len(rf.peers))
 	rf.SetType(Candidate)
@@ -369,7 +445,7 @@ func (rf *Raft) Candidate(){
 
 			continueVote = false
 			rf.currentTerm++
-			rf.votedFor = rf.ID
+			rf.votedFor = rf.me
 			rf.resetVoteCount()
 			rf.incVoteCount()
 			for idx, _ := range rf.peers {
@@ -378,7 +454,7 @@ func (rf *Raft) Candidate(){
 				}
 				arg := RequestVoteArgs{
 					Term:         rf.currentTerm,
-					CandidateID:  rf.ID,
+					CandidateID:  rf.me,
 					LastLogIndex: rf.log.getLastLogIndex(),
 					LastLogTerm:  rf.log.getLastLogTerm(),
 				}
@@ -394,11 +470,11 @@ func (rf *Raft) Candidate(){
 		default:
 			if rf.voteCount >= rf.getMajorityCount(){
 				rf.Type = Leader
-				go rf.Leader()
+				go rf.Leader(msgChan)
 				return
 			} else if rf.Type == Follower {
 				//fmt.Println(rf.me)
-				go rf.Follower()
+				go rf.Follower(msgChan)
 				return
 			}
 			continue
@@ -407,12 +483,19 @@ func (rf *Raft) Candidate(){
 }
 
 
-func (rf *Raft) Leader() {
+func (rf *Raft) Leader(msgChan chan ApplyMsg) {
 	rf.SetType(Leader)
 	//stopChan := make(chan bool, len(rf.peers)-1)
+
+	for idx,_ := range rf.peers{
+		rf.nextIndex[idx] = rf.log.getLastLogIndex() + 1
+		rf.matchIndex[idx] = 0
+	}
+
 	timer := time.NewTimer(100 * time.Millisecond)
 	flag := true
 	for rf.Type == Leader {
+
 		if flag == true {
 			flag = false
 			for idx, _ := range rf.peers {
@@ -428,12 +511,12 @@ func (rf *Raft) Leader() {
 				timer.Reset(100*time.Millisecond)
 		default:
 			if rf.Type == Follower{
-				go rf.Follower()
+				go rf.Follower(msgChan)
 				return
 			}
 		}
 	}
-	go rf.Follower()
+	go rf.Follower(msgChan)
 
 }
 //
@@ -487,10 +570,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.lastHeartBeat = time.Now().UnixNano()
 	rf.log = &Log{}
-	rf.ID = time.Now().UnixNano()
 	rf.voteCount = 0
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
+	rf.msgChan = applyCh
 	// Your initialization code here.
-	go rf.Follower()
+	go rf.Follower(applyCh)
 	//go rf.Report()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
