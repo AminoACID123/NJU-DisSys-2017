@@ -159,6 +159,7 @@ func (cfg *config) start1(i int) {
 				_, prevok := cfg.logs[i][m.Index-1]
 				cfg.logs[i][m.Index] = v
 				//fmt.Printf("%d  %d  %+v\n\n\n",i,m.Index, cfg.logs[i][m.Index])
+			//	fmt.Printf("%s %+v\n","Recv msg: ", time.Now())
 				cfg.mu.Unlock()
 
 				if m.Index > 1 && prevok == false {
@@ -329,7 +330,6 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 		cfg.mu.Lock()
 		cmd1, ok := cfg.logs[i][index]
 		cfg.mu.Unlock()
-
 		if ok {
 			if count > 0 && cmd != cmd1 {
 				cfg.t.Fatalf("committed values do not match: index %v, %v, %v\n",
@@ -408,6 +408,7 @@ func (cfg *config) one(cmd int, expectedServers int) int {
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
 			t1 := time.Now()
+			//fmt.Printf("%s %+v\n","Test: ", time.Now())
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
 				if nd > 0 && nd >= expectedServers {
