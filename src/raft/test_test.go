@@ -304,9 +304,11 @@ func TestRejoin(t *testing.T) {
 	// new leader commits, also for index=2
 	cfg.one(103, 2)
 
+
 	// new leader network failure
 	leader2 := cfg.checkOneLeader()
 	cfg.disconnect(leader2)
+
 
 	// old leader connected again
 	cfg.connect(leader1)
