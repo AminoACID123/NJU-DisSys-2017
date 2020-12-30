@@ -570,7 +570,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
-func (rf *Raft) Follower(){
+func (rf *Raft) FollowerLoop(){
 
 	rf.SetType(Follower)
 	t := int64(rand.Intn(5)*100+500)
@@ -579,18 +579,18 @@ func (rf *Raft) Follower(){
 
 		if (time.Now().UnixNano() - rf.lastHeartBeat)/1000000 > t{
 			fmt.Printf("%d     aaa\n\n\n",rf.me)
-			go rf.Candidate()
+			go rf.CandidateLoop()
 			return
 		}
 		//time.Sleep(time.Millisecond*50)
 	}
 }
 
-func (rf *Raft) Candidate(){
+func (rf *Raft) CandidateLoop(){
 	//fmt.Println("aaa")
 	//fmt.Println(len(rf.peers))
 	rf.SetType(Candidate)
-	//rf.Type = Candidate
+	//rf.Type = CandidateLoop
 	//resChan := make(chan RequestVoteReply, len(rf.peers)-1)
 	continueVote := true
 	t := int64(rand.Intn(10)*10+100)
@@ -626,11 +626,11 @@ func (rf *Raft) Candidate(){
 		default:
 			if rf.voteCount >= rf.getMajorityCount(){
 				rf.Type = Leader
-				go rf.Leader()
+				go rf.LeaderLoop()
 				return
 			} else if rf.Type == Follower {
 				//fmt.Println(rf.me)
-				go rf.Follower()
+				go rf.FollowerLoop()
 				return
 			}
 			continue
@@ -639,7 +639,7 @@ func (rf *Raft) Candidate(){
 }
 
 
-func (rf *Raft) Leader() {
+func (rf *Raft) LeaderLoop() {
 	rf.SetType(Leader)
 	rf.ready =false
 	//stopChan := make(chan bool, len(rf.peers)-1)
@@ -671,12 +671,12 @@ func (rf *Raft) Leader() {
 		default:
 			if rf.Type == Follower{
 				fmt.Printf("avasga\n\n\n\n")
-				go rf.Follower()
+				go rf.FollowerLoop()
 				return
 			}
 		}
 	}
-	go rf.Follower()
+	go rf.FollowerLoop()
 
 }
 //
@@ -729,7 +729,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.msgChan = applyCh
 	rf.ready = false
 	// Your initialization code here.
-	go rf.Follower()
+	go rf.FollowerLoop()
 //	go rf.Report()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
